@@ -1,4 +1,5 @@
-import os 
+
+import os
 import certifi
 from dotenv import load_dotenv
 
@@ -11,6 +12,7 @@ from typing import TypedDict, Annotated
 import operator
 import uuid
 import asyncio
+import time
 import psycopg
 from psycopg.rows import dict_row
 
@@ -23,17 +25,28 @@ from langchain_core.messages import (
     SystemMessage,
 )
 from langchain_groq import ChatGroq
+
 # from tools.tavily_tool import tavily_search
 # from tools.flight_tool import search_flights
-from mcp_client import tavily_mcp_search, aviation_mcp_call, extract_destination, forecast_mcp_search, weather_mcp_search
+
+from mcp_client import (
+    tavily_mcp_search,
+    aviation_mcp_call,
+    extract_destination,
+    forecast_mcp_search,
+    weather_mcp_search,
+)
 
 
 def get_database_url():
+    """Read the PostgreSQL connection URL from the .env file."""
+
     database_url = os.getenv("DATABASE_URL")
 
     if not database_url:
         raise ValueError(
-            "DATABASE_URL is missing. Please add your Render PostgreSQL External Database URL to .env"
+            "DATABASE_URL is missing. Please add your Render PostgreSQL "
+            "External Database URL to .env"
         )
 
     if "sslmode=" not in database_url:
@@ -44,8 +57,11 @@ def get_database_url():
 
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is missing. Please add it to your .env file.")
+    raise ValueError(
+        "GROQ_API_KEY is missing. Please add it to your .env file."
+    )
 
 
 # =========================
@@ -53,7 +69,7 @@ if not GROQ_API_KEY:
 # =========================
 
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-20b",
     api_key=GROQ_API_KEY
 )
 
@@ -79,7 +95,7 @@ class TravelState(TypedDict):
 # def flight_agent(state: TravelState):
 #     query = state["user_query"]
 #     flight_data = search_flights(query)
-
+#
 #     return {
 #         "flight_results": flight_data,
 #         "messages": [
@@ -87,8 +103,6 @@ class TravelState(TypedDict):
 #         ],
 #         "llm_calls": state.get("llm_calls", 0) + 1
 #     }
-
-
 
 
 # Flight Tool Router Prompt
@@ -118,28 +132,22 @@ Return concise travel guidance.
 """
 
 
-
-
 # Flight Agent
 def flight_agent(state: TravelState):
+    """Get airport and airline information to prepare flight advice."""
+
     print("\nINSIDE FLIGHT AGENT\n")
 
     query = state["user_query"]
 
     try:
-
         airports = asyncio.run(
-            aviation_mcp_call(
-                "list_airports"
-            )
+            aviation_mcp_call("list_airports")
         )
 
         airlines = asyncio.run(
-            aviation_mcp_call(
-                "list_airlines"
-            )
+            aviation_mcp_call("list_airlines")
         )
-
 
         print("\nAIRPORTS:", airports)
         print("\nAIRLINES:", airlines)
@@ -160,8 +168,9 @@ def flight_agent(state: TravelState):
         flight_data = response.content
 
     except Exception as e:
-
-        flight_data = f"Flight information unavailable: {str(e)}"
+        flight_data = (
+            f"Flight information unavailable: {str(e)}"
+        )
 
     return {
         "flight_results": flight_data,
@@ -174,17 +183,19 @@ def flight_agent(state: TravelState):
     }
 
 
-
-
-
 # =========================
 # Hotel Agent
 # =========================
 
 def hotel_agent(state: TravelState):
+    """Search for hotels using the user's travel request."""
+
     query = f"Best hotels for {state['user_query']}"
+
     # hotel_results = tavily_search(query)
-    hotel_results = asyncio.run(tavily_mcp_search(query))
+    hotel_results = asyncio.run(
+        tavily_mcp_search(query)
+    )
 
     return {
         "hotel_results": hotel_results,
@@ -195,13 +206,12 @@ def hotel_agent(state: TravelState):
     }
 
 
-
-
 # =========================
 # Weather Agent
 # =========================
 
 def weather_agent(state: TravelState):
+    """Find current weather and forecasts for the destination."""
 
     city = extract_destination(state["user_query"])
 
@@ -229,13 +239,13 @@ def weather_agent(state: TravelState):
     }
 
 
-
-
 # =========================
 # Itinerary Agent
 # =========================
 
 def itinerary_agent(state: TravelState):
+    """Create a travel itinerary using flight, hotel and weather data."""
+
     prompt = f"""
 Create a complete travel itinerary.
 
@@ -255,7 +265,9 @@ Make the itinerary practical, budget-aware, and easy to follow.
 """
 
     response = llm.invoke([
-        SystemMessage(content="You are an expert travel planner."),
+        SystemMessage(
+            content="You are an expert travel planner."
+        ),
         HumanMessage(content=prompt)
     ])
 
@@ -266,12 +278,13 @@ Make the itinerary practical, budget-aware, and easy to follow.
     }
 
 
-
 # =========================
 # Final Response Agent
 # =========================
 
 def final_agent(state: TravelState):
+    """Combine the agent results into one final travel response."""
+
     final_prompt = f"""
 Generate the final travel response for the user.
 
@@ -300,7 +313,6 @@ Format the final answer beautifully using these sections:
 6. Estimated Budget
 7. Final Recommendations
 
-
 Important:
 - Be clear and practical.
 - Mention that live flight API may not provide ticket prices if pricing is unavailable.
@@ -309,7 +321,9 @@ Important:
 """
 
     response = llm.invoke([
-        SystemMessage(content="You are a professional AI travel booking assistant."),
+        SystemMessage(
+            content="You are a professional AI travel booking assistant."
+        ),
         HumanMessage(content=final_prompt)
     ])
 
@@ -342,26 +356,73 @@ graph.add_edge("final_agent", END)
 # =========================
 # PostgreSQL Checkpointer
 # =========================
-DATABASE_URL = get_database_url()
 
-_conn = psycopg.connect(
-    DATABASE_URL,
-    autocommit=True,
-    row_factory=dict_row
-)
+def connect_database():
+    """Connect to Render PostgreSQL and retry temporary failures."""
+
+    database_url = get_database_url()
+
+    max_attempts = 3
+
+    for attempt in range(1, max_attempts + 1):
+
+        try:
+            print(
+                f"\nConnecting to PostgreSQL "
+                f"(attempt {attempt}/{max_attempts})..."
+            )
+
+            connection = psycopg.connect(
+                database_url,
+                autocommit=True,
+                row_factory=dict_row,
+                connect_timeout=10
+            )
+
+            print("PostgreSQL connection successful!")
+
+            return connection
+
+        except psycopg.OperationalError as error:
+
+            print(
+                f"PostgreSQL connection failed "
+                f"(attempt {attempt}/{max_attempts})."
+            )
+
+            if attempt == max_attempts:
+                raise ConnectionError(
+                    "Unable to connect to Render PostgreSQL. "
+                    "Check your DATABASE_URL, Render database status, "
+                    "network connection and SSL settings. "
+                    "The original database error is attached."
+                ) from error
+
+            print("Retrying in 3 seconds...")
+            time.sleep(3)
+
+
+_conn = connect_database()
 
 checkpointer = PostgresSaver(_conn)
+
 checkpointer.setup()
 
-travel_graph = graph.compile(checkpointer=checkpointer)
-
+travel_graph = graph.compile(
+    checkpointer=checkpointer
+)
 
 
 # =========================
 # Function for FastAPI
 # =========================
 
-def run_travel_agent(user_input: str, thread_id: str | None = None):
+def run_travel_agent(
+    user_input: str,
+    thread_id: str | None = None
+):
+    """Run the travel agents and return the completed travel plan."""
+
     if not thread_id:
         thread_id = f"user_{uuid.uuid4().hex}"
 
@@ -391,9 +452,19 @@ def run_travel_agent(user_input: str, thread_id: str | None = None):
     return {
         "thread_id": thread_id,
         "answer": final_answer,
-        "flight_results": result.get("flight_results", ""),
-        "hotel_results": result.get("hotel_results", ""),
-        "weather_results": result.get("weather_results", ""),
-        "itinerary": result.get("itinerary", ""),
-        "llm_calls": result.get("llm_calls", 0),
+        "flight_results": result.get(
+            "flight_results", ""
+        ),
+        "hotel_results": result.get(
+            "hotel_results", ""
+        ),
+        "weather_results": result.get(
+            "weather_results", ""
+        ),
+        "itinerary": result.get(
+            "itinerary", ""
+        ),
+        "llm_calls": result.get(
+            "llm_calls", 0
+        ),
     }
