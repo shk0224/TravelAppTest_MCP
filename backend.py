@@ -32,6 +32,7 @@ from langchain_groq import ChatGroq
 from mcp_client import (
     tavily_mcp_search,
     aviation_mcp_call,
+    mcp_call,
     extract_destination,
     forecast_mcp_search,
     weather_mcp_search,
@@ -138,26 +139,30 @@ def flight_agent(state: TravelState):
 
     print("\nINSIDE FLIGHT AGENT\n")
 
+    # Local variable: renameable if all references are updated.
     query = state["user_query"]
 
     try:
+        # MCP tool names are registered on the AviationStack server.
         airports = asyncio.run(
-            aviation_mcp_call("list_airports")
+            mcp_call("aviationstack", "list_airports", {})
         )
 
         airlines = asyncio.run(
-            aviation_mcp_call("list_airlines")
+            mcp_call("aviationstack", "list_airlines", {})
         )
 
         print("\nAIRPORTS:", airports)
         print("\nAIRLINES:", airlines)
 
+        # .format() fills placeholders and returns a new string.
         prompt = FLIGHT_AGENT_PROMPT.format(
             query=query,
             airport_data=str(airports)[:3000],
             airline_data=str(airlines)[:3000]
         )
 
+        # llm is an object; .invoke() is its library method.
         response = llm.invoke([
             SystemMessage(
                 content="You are an expert travel flight planner."
@@ -190,11 +195,13 @@ def flight_agent(state: TravelState):
 def hotel_agent(state: TravelState):
     """Search for hotels using the user's travel request."""
 
+    # Local variable: renameable; the "user_query" state key must match.
     query = f"Best hotels for {state['user_query']}"
 
     # hotel_results = tavily_search(query)
+    # Same pattern as Flight Agent: server, tool, input dictionary.
     hotel_results = asyncio.run(
-        tavily_mcp_search(query)
+        mcp_call("tavily", "tavily_search", {"query": query})
     )
 
     return {
